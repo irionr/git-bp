@@ -1,0 +1,107 @@
+#!/bin/sh
+set -eu
+
+DAYS=90
+DELETE=0
+PATTERN=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --delete) DELETE=1 ;;
+    -d|--days) DAYS="$2"; shift ;;
+    --days=*) DAYS="${1#--days=}" ;;
+    -p|--pattern) PATTERN="$2"; shift ;;
+    --pattern=*) PATTERN="${1#--pattern=}" ;;
+    -h|--help)
+      cat <<EOF
+Usage: git bp [--delete] [-d|--days N] [-p|--pattern GLOB]
+
+Prune local branches whose upstream is gone and whose tip commit is
+older than N days (skipping branches checked out in any worktree),
+and delete remote branches on 'origin' with no commits in the last
+N days (default: 90). The remote's default branch (origin/HEAD) is
+protected.
+
+By default the script only reports what would be deleted. Pass --delete
+to actually remove the branches.
+
+With --pattern, only branches whose name matches the shell glob are
+considered for deletion (both local and remote). A pattern with no
+glob character (*, ?, [) is treated as a prefix, so 'dev/fi' matches
+'dev/fi/foo' as if you had passed 'dev/fi*'.
+
+Branches whose name is 'master' or contains 'hotfix', 'REL_', or 'REL'
+followed by a digit (e.g. REL3_7) are always kept, even when they
+match the pattern.
+EOF
+      exit 0
+      ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [ -n "$PATTERN" ]; then
+  case "$PATTERN" in
+    *\**|*\?*|*\[*) : ;;
+    *) PATTERN="${PATTERN}*" ;;
+  esac
+fi
+
+matches() {
+  [ -z "$PATTERN" ] && return 0
+  # shellcheck disable=SC2254
+  case "$1" in
+    $PATTERN) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_protected() {
+  case "$1" in
+    master|*hotfix*|*REL_*|*REL[0-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+git fetch -p
+
+cutoff=$(($(date +%s) - DAYS * 86400))
+
+for branch in $(git for-each-ref --format '%(refname) %(upstream:track) %(worktreepath) %(committerdate:unix)' refs/heads | awk -v cutoff="$cutoff" '$2 == "[gone]" && $3 == "" && $4 + 0 < cutoff {sub("refs/heads/", "", $1); print $1}')
+do
+  matches "$branch" || continue
+  is_protected "$branch" && continue
+  if [ "$DELETE" = 1 ]; then
+    git branch -D "$branch"
+  else
+    echo "would delete local: $branch"
+  fi
+done
+
+default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
+
+stale=$(git for-each-ref --format '%(refname:short) %(committerdate:unix)' refs/remotes/origin \
+  | awk -v cutoff="$cutoff" -v def="$default_branch" '
+      {
+        sub("^origin/", "", $1)
+        if ($1 == "HEAD") next
+        if (def != "" && $1 == def) next
+        if ($2 + 0 < cutoff) print $1
+      }')
+
+filtered=""
+for b in $stale; do
+  matches "$b" || continue
+  is_protected "$b" && continue
+  filtered="$filtered $b"
+done
+
+if [ -n "$filtered" ]; then
+  if [ "$DELETE" = 1 ]; then
+    # shellcheck disable=SC2086
+    git push origin --delete $filtered
+  else
+    for b in $filtered; do echo "would delete remote: origin/$b"; done
+  fi
+fi
