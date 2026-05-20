@@ -4,31 +4,39 @@ set -eu
 DAYS=90
 DELETE=0
 PATTERN=""
+SCOPE=local
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --delete) DELETE=1 ;;
+    --local) SCOPE=local ;;
+    --remote) SCOPE=remote ;;
     -d|--days) DAYS="$2"; shift ;;
     --days=*) DAYS="${1#--days=}" ;;
     -p|--pattern) PATTERN="$2"; shift ;;
     --pattern=*) PATTERN="${1#--pattern=}" ;;
     -h|--help)
       cat <<EOF
-Usage: git bp [--delete] [-d|--days N] [-p|--pattern GLOB]
+Usage: git bp [--local|--remote] [--delete] [-d|--days N] [-p|--pattern GLOB]
 
-Prune local branches whose upstream is gone and whose tip commit is
-older than N days (skipping branches checked out in any worktree),
-and delete remote branches on 'origin' with no commits in the last
-N days (default: 90). The remote's default branch (origin/HEAD) is
-protected.
+Prune branches that are no longer needed.
+
+  --local   (default) Delete local branches whose tip commit is older
+            than N days, when either the upstream is gone or no upstream
+            is configured. Branches whose upstream still exists on
+            origin are kept (still actively tracked). Branches checked
+            out in any worktree are skipped.
+
+  --remote  Delete branches on 'origin' with no commits in the last N
+            days. The remote's default branch (origin/HEAD) is protected.
 
 By default the script only reports what would be deleted. Pass --delete
 to actually remove the branches.
 
 With --pattern, only branches whose name matches the shell glob are
-considered for deletion (both local and remote). A pattern with no
-glob character (*, ?, [) is treated as a prefix, so 'dev/fi' matches
-'dev/fi/foo' as if you had passed 'dev/fi*'.
+considered for deletion. A pattern with no glob character (*, ?, [) is
+treated as a prefix, so 'dev/fi' matches 'dev/fi/foo' as if you had
+passed 'dev/fi*'.
 
 Branches whose name is 'master' or contains 'hotfix', 'REL_', or 'REL'
 followed by a digit (e.g. REL3_7) are always kept, even when they
@@ -68,40 +76,44 @@ git fetch -p
 
 cutoff=$(($(date +%s) - DAYS * 86400))
 
-for branch in $(git for-each-ref --format '%(refname) %(upstream:track) %(worktreepath) %(committerdate:unix)' refs/heads | awk -v cutoff="$cutoff" '$2 == "[gone]" && $3 == "" && $4 + 0 < cutoff {sub("refs/heads/", "", $1); print $1}')
-do
-  matches "$branch" || continue
-  is_protected "$branch" && continue
-  if [ "$DELETE" = 1 ]; then
-    git branch -D "$branch"
-  else
-    echo "would delete local: $branch"
-  fi
-done
+if [ "$SCOPE" = local ]; then
+  for branch in $(git for-each-ref --format '%(refname)|%(upstream:track)|%(upstream)|%(worktreepath)|%(committerdate:unix)' refs/heads | awk -F'|' -v cutoff="$cutoff" '($2 == "[gone]" || $3 == "") && $4 == "" && $5 + 0 < cutoff {sub("refs/heads/", "", $1); print $1}')
+  do
+    matches "$branch" || continue
+    is_protected "$branch" && continue
+    if [ "$DELETE" = 1 ]; then
+      git branch -D "$branch"
+    else
+      echo "would delete local: $branch"
+    fi
+  done
+fi
 
-default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
+if [ "$SCOPE" = remote ]; then
+  default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)
 
-stale=$(git for-each-ref --format '%(refname:short) %(committerdate:unix)' refs/remotes/origin \
-  | awk -v cutoff="$cutoff" -v def="$default_branch" '
-      {
-        sub("^origin/", "", $1)
-        if ($1 == "HEAD") next
-        if (def != "" && $1 == def) next
-        if ($2 + 0 < cutoff) print $1
-      }')
+  stale=$(git for-each-ref --format '%(refname:short) %(committerdate:unix)' refs/remotes/origin \
+    | awk -v cutoff="$cutoff" -v def="$default_branch" '
+        {
+          sub("^origin/", "", $1)
+          if ($1 == "HEAD") next
+          if (def != "" && $1 == def) next
+          if ($2 + 0 < cutoff) print $1
+        }')
 
-filtered=""
-for b in $stale; do
-  matches "$b" || continue
-  is_protected "$b" && continue
-  filtered="$filtered $b"
-done
+  filtered=""
+  for b in $stale; do
+    matches "$b" || continue
+    is_protected "$b" && continue
+    filtered="$filtered $b"
+  done
 
-if [ -n "$filtered" ]; then
-  if [ "$DELETE" = 1 ]; then
-    # shellcheck disable=SC2086
-    git push origin --delete $filtered
-  else
-    for b in $filtered; do echo "would delete remote: origin/$b"; done
+  if [ -n "$filtered" ]; then
+    if [ "$DELETE" = 1 ]; then
+      # shellcheck disable=SC2086
+      git push origin --delete $filtered
+    else
+      for b in $filtered; do echo "would delete remote: origin/$b"; done
+    fi
   fi
 fi

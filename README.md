@@ -21,7 +21,7 @@ ln -s "$PWD/git-bp/git-bp" ~/bin/git-bp
 ## Usage
 
 ```
-git bp [--delete] [-d|--days N] [-p|--pattern GLOB]
+git bp [--local|--remote] [--delete] [-d|--days N] [-p|--pattern GLOB]
 ```
 
 By default the script runs in dry-run mode and prints lines like:
@@ -35,11 +35,14 @@ Pass `--delete` to perform the deletions.
 
 ### Options
 
+- `--local` *(default)* — operate on local branches only. A local
+  branch is deleted if its tip commit is older than `--days` *and*
+  either its upstream is `[gone]` or no upstream is configured.
+  Branches whose upstream still exists on `origin` are kept.
+- `--remote` — operate on `origin` branches only. A remote branch is
+  deleted if its last commit is older than `--days`.
 - `--delete` — actually delete instead of dry-running.
 - `-d N`, `--days N` — staleness threshold in days (default `90`).
-  - A local branch is only deleted if its tip commit is older than this
-    *and* its upstream is `[gone]`.
-  - A remote branch is only deleted if its last commit is older than this.
 - `-p GLOB`, `--pattern GLOB` — restrict deletion to branches matching
   the glob. If the pattern has no glob characters (`*`, `?`, `[`), `*`
   is appended automatically. So `-p dev/fi` is equivalent to
@@ -48,14 +51,14 @@ Pass `--delete` to perform the deletions.
 ### Examples
 
 ```sh
-# Show what would be deleted with the default 90-day threshold.
+# Dry-run local cleanup with the default 90-day threshold.
 git bp
 
-# Same, but limit to your own dev/foo/* branches and a 30-day cutoff.
-git bp -p dev/foo -d 30
+# Dry-run remote cleanup of stale origin branches under dev/foo/.
+git bp --remote -p dev/foo -d 30
 
-# Actually delete.
-git bp -p dev/foo -d 30 --delete
+# Actually delete those remote branches.
+git bp --remote -p dev/foo -d 30 --delete
 ```
 
 ### Always-protected branches
